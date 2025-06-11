@@ -26,66 +26,58 @@ def detect_corners(image_path):
     if img is None:
         raise FileNotFoundError(f"Image not found at {image_path}")
 
-    # Save original image for debugging
     cv2.imwrite('debug_original.jpg', img)
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     cv2.imwrite('debug_gray.jpg', gray)
 
-    # Apply CLAHE for contrast enhancement
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    cl1 = clahe.apply(gray)
-    cv2.imwrite('debug_clahe.jpg', cl1)
-
     # Apply Bilateral Filter for noise reduction while preserving edges
-    blurred = cv2.bilateralFilter(cl1, 9, 75, 75)
+    blurred = cv2.bilateralFilter(gray, 9, 75, 75) # Retaining original bilateral filter for edge preservation
     cv2.imwrite('debug_blurred.jpg', blurred)
 
-    # Canny Edge Detection
-    edges = cv2.Canny(blurred, 50, 150) # Tuned thresholds
+    # Canny Edge Detection with adjusted thresholds
+    edges = cv2.Canny(blurred, 30, 90) # Lowering thresholds to capture fainter edges
     cv2.imwrite('debug_edges.jpg', edges)
 
-    # Morphological Closing to connect broken edge lines
-    kernel = np.ones((5,5), np.uint8)
+    # Morphological Closing to connect broken edge lines with a larger, rectangular kernel
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (10, 10)) # Using a rectangular kernel
     closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
     cv2.imwrite('debug_closed_edges.jpg', closed_edges)
 
     # Find contours
-    contours, _ = cv2.findContours(closed_edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-    
-    # Sort contours by area in descending order and iterate through them
+    contours, _ = cv2.findContours(closed_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Sort contours by area in descending order
     contours = sorted(contours, key=cv2.contourArea, reverse=True)
 
-    chessboard_corners = None
+    chessboard_outer_corners = None
     for contour in contours:
         # Approximate the contour to a polygon
         peri = cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
 
         # If the approximated contour has 4 vertices (a quadrilateral) and is reasonably large
-        if len(approx) == 4 and cv2.contourArea(approx) > 1000: # Minimum area to filter small noise
-            # Order the points
-            ordered_pts = order_points(approx.reshape(4, 2))
-            
-            # Check if the quadrilateral is somewhat rectangular (aspect ratio, angle checks can be added)
-            # For now, a simple check that it's the largest 4-sided contour is sufficient
-            
-            chessboard_corners = ordered_pts
-            
-            # Draw the contour for debugging
-            img_contour = img.copy()
-            cv2.drawContours(img_contour, [approx], -1, (0, 255, 0), 10) # Green contour, thick line
-            for corner_pt in ordered_pts:
-                cv2.circle(img_contour, (int(corner_pt[0]), int(corner_pt[1])), 20, (0, 0, 255), -1) # Red circles for corners
-            cv2.imwrite('debug_contour.jpg', img_contour)
-            break # Found the largest likely chessboard
+        if len(approx) == 4 and cv2.contourArea(approx) > 5000: # Reverted to lower minimum area
+            # Check aspect ratio for square-like contours
+            x, y, w, h = cv2.boundingRect(approx)
+            aspect_ratio = float(w)/h
+            if 0.8 <= aspect_ratio <= 1.2: # Allow for some perspective distortion
+                chessboard_outer_corners = order_points(approx.reshape(4, 2))
+                
+                # Draw the detected contour and corners for debugging
+                img_contour = img.copy()
+                cv2.drawContours(img_contour, [approx], -1, (0, 255, 0), 10) # Green contour, thick line
+                for corner_pt in chessboard_outer_corners:
+                    cv2.circle(img_contour, (int(corner_pt[0]), int(corner_pt[1])), 20, (0, 0, 255), -1) # Red circles for corners
+                cv2.imwrite('debug_outer_contour.jpg', img_contour)
 
-    if chessboard_corners is not None:
-        print("Chessboard corners successfully detected using contour method.")
-        # The order_points function already ensures top-left, top-right, bottom-right, bottom-left
-        return chessboard_corners
-    else:
+                print("Chessboard outer contour successfully detected.")
+                break # Found the largest likely chessboard
+
+    if chessboard_outer_corners is None:
         raise ValueError("Could not find a clear quadrilateral contour representing the chessboard.")
+    
+    return chessboard_outer_corners
 
 def four_point_transform(image, pts):
     img = Image.open(image)
@@ -157,12 +149,19 @@ def main(image_path):
         print("Detected corners:")
         print(corners)
         
+        # Transform the image to get a bird's-eye view of the chessboard
+        transformed_board = four_point_transform(image_path, corners)
+        # Convert PIL Image to NumPy array for saving with OpenCV
+        transformed_board_np = np.array(transformed_board)
+        cv2.imwrite('debug_cropped_board.jpg', transformed_board_np)
+        print("Cropped chessboard image saved as debug_cropped_board.jpg")
+
         # You can add code here to visualize the corners on the original image
         img_original = cv2.imread(image_path)
         if img_original is not None:
             for corner in corners:
                 x, y = corner.ravel()
-                cv2.circle(img_original, (int(x), int(y)), 5, (0, 255, 0), -1) # Green circles
+                cv2.circle(img_original, (int(x), int(y)), 5, (0, 0, 255), -1) # Red circles
             cv2.imwrite('output_corners.jpg', img_original)
             print("Original image with detected corners saved as output_corners.jpg")
 
